@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PhotoPilot AI</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <aside class="sidebar" aria-label="项目导航">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">P</div>
+          <div>
+            <h1>PhotoPilot AI</h1>
+            <p>选片、调色、美颜</p>
+          </div>
+        </div>
+
+        <section class="nav-section">
+          <h2>工作流</h2>
+          <button class="nav-item active" type="button" data-view="select">
+            <span>精选</span>
+            <strong id="countKeep">0</strong>
+          </button>
+          <button class="nav-item" type="button" data-view="maybe">
+            <span>待定</span>
+            <strong id="countMaybe">0</strong>
+          </button>
+          <button class="nav-item" type="button" data-view="reject">
+            <span>淘汰</span>
+            <strong id="countReject">0</strong>
+          </button>
+        </section>
+
+        <section class="nav-section">
+          <h2>快速筛选</h2>
+          <label class="field-label" for="scoreFilter">最低 AI 分</label>
+          <input id="scoreFilter" class="range" type="range" min="0" max="100" value="0" />
+          <div class="range-row">
+            <span>0</span>
+            <strong id="scoreFilterValue">0+</strong>
+            <span>100</span>
+          </div>
+          <label class="check-row">
+            <input id="showOnlyFaces" type="checkbox" />
+            <span>只看人像</span>
+          </label>
+          <label class="check-row">
+            <input id="showOnlyEdited" type="checkbox" />
+            <span>只看已编辑</span>
+          </label>
+        </section>
+
+        <section class="provider-card">
+          <h2>AI 与隐私</h2>
+          <p id="providerSummary">当前使用本地模拟 AI，不上传照片。</p>
+          <button id="settingsButton" class="button subtle full" type="button">设置</button>
+        </section>
+      </aside>
+
+      <section class="workspace">
+        <header class="topbar">
+          <div class="topbar-copy">
+            <p class="eyebrow">低门槛 AI 照片工作台</p>
+            <h2>先选好，再轻松修好</h2>
+            <p id="appMessage" class="app-message" role="status">拖入照片或载入示例即可开始。</p>
+          </div>
+          <div class="topbar-actions">
+            <input id="fileInput" type="file" accept="image/*" multiple hidden />
+            <button id="importButton" class="button primary" type="button">导入照片</button>
+            <button id="sampleButton" class="button" type="button">载入示例</button>
+            <button id="runAiButton" class="button dark" type="button">AI 重新评分</button>
+          </div>
+        </header>
+
+        <section class="status-strip" aria-label="项目概览">
+          <article>
+            <span>照片</span>
+            <strong id="statTotal">0</strong>
+          </article>
+          <article>
+            <span>平均分</span>
+            <strong id="statAverage">0</strong>
+          </article>
+          <article>
+            <span>推荐精选</span>
+            <strong id="statRecommended">0</strong>
+          </article>
+          <article>
+            <span>已编辑</span>
+            <strong id="statEdited">0</strong>
+          </article>
+        </section>
+
+        <section class="content-grid">
+          <section class="gallery-panel" aria-label="照片列表">
+            <div class="panel-head">
+              <div>
+                <h3>照片池</h3>
+                <p id="galleryHint">导入照片或载入示例开始。</p>
+              </div>
+              <select id="sortSelect" aria-label="排序方式">
+                <option value="score-desc">AI 分数从高到低</option>
+                <option value="score-asc">AI 分数从低到高</option>
+                <option value="name-asc">文件名</option>
+                <option value="edited">已编辑优先</option>
+              </select>
+            </div>
+            <div id="gallery" class="gallery"></div>
+          </section>
+
+          <section class="preview-panel" aria-label="照片预览">
+            <div class="preview-toolbar">
+              <div>
+                <h3 id="photoTitle">未选择照片</h3>
+                <p id="photoMeta">选择一张照片查看评分和编辑效果。</p>
+              </div>
+              <div class="segmented" aria-label="预览模式">
+                <button id="beforeButton" type="button">原图</button>
+                <button id="afterButton" class="active" type="button">效果</button>
+              </div>
+            </div>
+
+            <div id="previewStage" class="preview-stage empty">
+              <div class="empty-state">
+                <strong>把照片拖进你的工作流</strong>
+                <span>AI 会先帮你筛掉虚焦、闭眼和重复照片。</span>
+              </div>
+              <img id="previewImage" alt="当前照片预览" />
+            </div>
+
+            <div class="decision-row">
+              <button class="decision keep" type="button" data-status="keep">保留</button>
+              <button class="decision maybe" type="button" data-status="maybe">待定</button>
+              <button class="decision reject" type="button" data-status="reject">淘汰</button>
+            </div>
+          </section>
+
+          <aside class="inspector" aria-label="AI 和编辑面板">
+            <section class="score-card">
+              <div class="score-ring">
+                <span id="scoreValue">--</span>
+              </div>
+              <div>
+                <h3 id="scoreLabel">AI 评分</h3>
+                <p id="scoreReason">导入照片后会显示推荐原因。</p>
+              </div>
+            </section>
+
+            <section class="inspector-section">
+              <div class="section-title">
+                <h3>AI 建议</h3>
+                <button id="copyBestButton" class="icon-button" type="button" title="应用 AI 建议">应用</button>
+              </div>
+              <ul id="aiNotes" class="note-list"></ul>
+            </section>
+
+            <section class="inspector-section">
+              <div class="section-title">
+                <h3>自动调色</h3>
+                <button id="resetEditsButton" class="icon-button" type="button" title="重置编辑">重置</button>
+              </div>
+              <div class="preset-grid">
+                <button type="button" data-preset="clean">清透自然</button>
+                <button type="button" data-preset="film">胶片暖调</button>
+                <button type="button" data-preset="studio">干净棚拍</button>
+                <button type="button" data-preset="night">夜景增强</button>
+              </div>
+            </section>
+
+            <section class="inspector-section controls">
+              <label>
+                <span>曝光 <strong data-edit-value="exposure">0</strong></span>
+                <input type="range" min="-100" max="100" value="0" data-edit="exposure" />
+              </label>
+              <label>
+                <span>对比 <strong data-edit-value="contrast">0</strong></span>
+                <input type="range" min="-100" max="100" value="0" data-edit="contrast" />
+              </label>
+              <label>
+                <span>色温 <strong data-edit-value="temperature">0</strong></span>
+                <input type="range" min="-100" max="100" value="0" data-edit="temperature" />
+              </label>
+              <label>
+                <span>饱和 <strong data-edit-value="saturation">0</strong></span>
+                <input type="range" min="-100" max="100" value="0" data-edit="saturation" />
+              </label>
+              <label>
+                <span>美颜 <strong data-edit-value="beauty">12</strong></span>
+                <input type="range" min="0" max="100" value="12" data-edit="beauty" />
+              </label>
+            </section>
+
+            <section class="inspector-section">
+              <h3>对 AI 说</h3>
+              <textarea id="promptInput" rows="4" placeholder="例如：日系清透，皮肤自然一点，背景冷一点，不要太假"></textarea>
+              <div class="prompt-actions">
+                <button id="promptButton" class="button primary full" type="button">生成调色方案</button>
+              </div>
+            </section>
+
+            <section class="inspector-section">
+              <h3>批量同步</h3>
+              <div class="action-grid">
+                <button id="batchVisibleButton" class="button" type="button">同步到可见照片</button>
+                <button id="batchKeepButton" class="button" type="button">同步到精选照片</button>
+              </div>
+            </section>
+
+            <section class="inspector-section">
+              <h3>导出</h3>
+              <div class="action-grid">
+                <button id="exportImageButton" class="button dark" type="button">导出效果图</button>
+                <button id="exportRecipeButton" class="button" type="button">导出项目方案</button>
+              </div>
+              <p id="exportSummary" class="small-copy">导出会保留原图，并记录当前非破坏式编辑参数。</p>
+            </section>
+          </aside>
+        </section>
+      </section>
+    </main>
+
+    <div id="settingsModal" class="modal" hidden>
+      <div class="modal-backdrop" data-close-settings></div>
+      <section class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">AI Provider</p>
+            <h2 id="settingsTitle">设置</h2>
+          </div>
+          <button id="closeSettingsButton" class="icon-button" type="button" aria-label="关闭设置">关闭</button>
+        </div>
+
+        <div class="settings-grid">
+          <label class="field-stack">
+            <span>AI 模式</span>
+            <select id="aiMode">
+              <option value="local">本地像素评分，不上传照片</option>
+              <option value="cloud">云端大模型复核评分</option>
+            </select>
+          </label>
+
+          <label class="field-stack">
+            <span>Provider</span>
+            <select id="providerSelect">
+              <option value="local-pixel">本地像素评分</option>
+              <option value="openai">ChatGPT / OpenAI</option>
+              <option value="deepseek">DeepSeek</option>
+              <option value="claude">Claude</option>
+              <option value="kimi">Kimi</option>
+              <option value="openai-compatible">自定义 OpenAI 兼容接口</option>
+            </select>
+          </label>
+
+          <label class="field-stack">
+            <span>API Key</span>
+            <input id="apiKeyInput" type="password" autocomplete="off" placeholder="仅保存在当前浏览器会话，不写入源码" />
+          </label>
+
+          <label class="check-row setting-check">
+            <input id="uploadConsent" type="checkbox" />
+            <span>我确认允许上传压缩缩略图与本地评分指标给所选大模型进行复核</span>
+          </label>
+        </div>
+
+        <div class="notice-card">
+          默认使用本地 Canvas 像素指标评分。选择云端模式后，PhotoPilot 会通过本机 Node 服务代理请求模型 API，避免把 Key 暴露给前端代码；未填写 Key 或未授权时会继续使用本地评分。
+        </div>
+
+        <div class="modal-actions">
+          <button id="cancelSettingsButton" class="button" type="button">取消</button>
+          <button id="saveSettingsButton" class="button primary" type="button">保存设置</button>
+        </div>
+      </section>
+    </div>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
