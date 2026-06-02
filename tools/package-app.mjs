@@ -97,6 +97,9 @@ async function buildExeIfPossible() {
     await rm(target, { force: true });
     await copyFile(launcher, resolve(release, "launcher.cjs"));
     console.warn(`Could not build SEA executable: ${error.message}`);
+  } finally {
+    await rm(blob, { force: true });
+    await rm(seaConfig, { force: true });
   }
 }
 
