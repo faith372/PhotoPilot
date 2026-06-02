@@ -1,6 +1,6 @@
 # 对话记录摘要
 
-日期：2026-06-01
+日期：2026-06-01 至 2026-06-02
 
 ## 用户需求
 
@@ -38,6 +38,12 @@
 7. 增加 `docs/scoring-research.md` 记录评分机制调研。
 8. 增加 `tools/package-app.mjs` 和 `tools/windows-launcher.cjs`，生成 `dist/PhotoPilot` 发布目录和 `PhotoPilot.exe`。
 9. 更新 README，补充运行、检查、打包、大模型 API 和隐私说明。
+10. 继续按项目开发文档推进：
+    - 增加 `/api/retouch`，支持通过 OpenAI/DeepSeek/Claude/Kimi/兼容接口生成结构化修图参数。
+    - 前端自然语言修图改为 Provider 模式：本地规则默认可用，云端授权后调用大模型，失败时自动回退本地方案。
+    - 增加“导出精选图”，可将所有保留照片按当前编辑参数批量导出 PNG。
+    - 更新 Windows 可运行文件启动器，使 `PhotoPilot.exe` 版也支持 `/api/score` 和 `/api/retouch`。
+    - 清理远程过期 Pages 配置的本地跟踪差异，后续推送会删除 GitHub 上旧的 `.github/workflows/pages.yml`、`.nojekyll` 和 `downloads/.gitkeep`。
 
 ## 验证
 
@@ -60,3 +66,15 @@ UI validation passed.
 dist/PhotoPilot/PhotoPilot.exe
 ```
 
+2026-06-02 继续验证：
+
+```text
+npm.cmd run check
+npm.cmd run package
+```
+
+目标输出仍为：
+
+```text
+dist/PhotoPilot/PhotoPilot.exe
+```

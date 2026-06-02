@@ -102,6 +102,7 @@ const els = {
   batchVisibleButton: document.querySelector("#batchVisibleButton"),
   batchKeepButton: document.querySelector("#batchKeepButton"),
   exportImageButton: document.querySelector("#exportImageButton"),
+  exportKeepButton: document.querySelector("#exportKeepButton"),
   exportRecipeButton: document.querySelector("#exportRecipeButton"),
   exportSummary: document.querySelector("#exportSummary"),
   statTotal: document.querySelector("#statTotal"),
@@ -166,6 +167,49 @@ const cloudVisionProvider = {
     const data = await response.json();
     const byId = new Map((data.results ?? []).map((item) => [item.id, item]));
     return photos.map((photo, index) => mergeCloudScore(localScores[index], byId.get(photo.id), photo));
+  },
+};
+
+const localRetouchProvider = {
+  id: "local-rules",
+  label: "本地提示词规则",
+  async createPlan({ prompt }) {
+    return planFromPrompt(prompt);
+  },
+};
+
+const cloudRetouchProvider = {
+  id: "cloud-retouch",
+  label: "大模型修图方案",
+  async createPlan({ photo, prompt }) {
+    ensureCloudReady("云端修图方案需要填写 API Key 并确认上传缩略图授权。当前未上传照片。");
+
+    const response = await fetch("/api/retouch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        settings: state.settings,
+        photo: {
+          id: photo.id,
+          name: photo.name,
+          type: photo.type,
+          imageDataUrl: photo.thumbnailDataUrl,
+          score: photo.score,
+          status: photo.status,
+          analysis: photo.analysis,
+          currentEdit: photo.edit,
+        },
+        prompt,
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.message ?? "云端修图方案请求失败。");
+    }
+
+    const data = await response.json();
+    return normalizeEditPlan(data.plan, planFromPrompt(prompt));
   },
 };
 
@@ -269,7 +313,7 @@ async function scorePhotoLocally(photo) {
 
     const typeBoost = photo.type === "product" ? 4 : photo.type === "landscape" ? 2 : 0;
     const expression = photo.type === "portrait" ? clamp(Math.round(metrics.composition * 0.55 + metrics.exposure * 0.25 + metrics.sharpness * 0.2), 0, 100) : null;
-    const finalScore = clamp(
+    const rawScore = clamp(
       Math.round(
         metrics.sharpness * 0.24 +
           metrics.exposure * 0.18 +
@@ -284,6 +328,7 @@ async function scorePhotoLocally(photo) {
       0,
       100,
     );
+    const finalScore = photo.isSample && photo.scoreBias ? clamp(Math.round(rawScore * 0.25 + photo.scoreBias * 0.75), 0, 100) : rawScore;
 
     return finalizeAnalysis({
       finalScore,
@@ -297,7 +342,10 @@ async function scorePhotoLocally(photo) {
       duplicate,
       confidence: 0.78,
       source: "本地像素评分",
-      notes: buildScoreNotes({ ...metrics, expression, duplicate }),
+      notes: [
+        ...(photo.isSample && photo.scoreBias ? ["示例照片已按预设难度校准，方便体验精选/待定/淘汰流程。"] : []),
+        ...buildScoreNotes({ ...metrics, expression, duplicate }),
+      ],
     });
   } catch {
     return fallbackAnalyzePhoto(photo);
@@ -1055,6 +1103,35 @@ function planFromPrompt(prompt) {
   };
 }
 
+function normalizeEditPlan(plan, fallback = null) {
+  const base = fallback ?? {
+    ...defaultEdit,
+    label: "AI 修图方案",
+    notes: ["已按当前照片和提示词生成可编辑参数。"],
+  };
+
+  return {
+    exposure: normalizeEditValue(plan?.exposure, base.exposure, -100, 100),
+    contrast: normalizeEditValue(plan?.contrast, base.contrast, -100, 100),
+    temperature: normalizeEditValue(plan?.temperature, base.temperature, -100, 100),
+    saturation: normalizeEditValue(plan?.saturation, base.saturation, -100, 100),
+    beauty: normalizeEditValue(plan?.beauty, base.beauty, 0, 100),
+    label: String(plan?.label || base.label || "AI 修图方案").slice(0, 32),
+    notes: normalizePlanNotes(plan?.notes, base.notes),
+  };
+}
+
+function normalizeEditValue(value, fallback, min, max) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return clamp(Math.round(number), min, max);
+}
+
+function normalizePlanNotes(notes, fallback = []) {
+  const normalized = Array.isArray(notes) ? notes.map((note) => String(note).trim()).filter(Boolean) : [];
+  return (normalized.length ? normalized : fallback).slice(0, 4);
+}
+
 function containsAny(text, words) {
   return words.some((word) => text.includes(word));
 }
@@ -1100,6 +1177,29 @@ function currentVisionProvider() {
     return cloudVisionProvider;
   }
   return localPixelProvider;
+}
+
+function currentRetouchProvider() {
+  if (state.settings.aiMode === "cloud" && state.settings.provider !== "local-pixel") {
+    return cloudRetouchProvider;
+  }
+  return localRetouchProvider;
+}
+
+function ensureCloudReady(message) {
+  if (!state.settings.apiKey || !state.settings.uploadConsent) {
+    throw new Error(message);
+  }
+}
+
+async function ensurePhotoThumbnail(photo) {
+  if (photo.thumbnailDataUrl) return;
+  const analysis = await scorePhotoLocally(photo);
+  photo.thumbnailDataUrl = photo.thumbnailDataUrl || null;
+  photo.hash = photo.hash || null;
+  photo.analysis = analysis;
+  photo.score = analysis.finalScore;
+  photo.status = analysis.status;
 }
 
 async function rerunLocalScoring(message = "已完成本地图像评分。") {
@@ -1189,6 +1289,33 @@ async function exportCurrentImage() {
   }
 }
 
+async function exportKeepImages() {
+  const photos = state.photos.filter((photo) => photo.status === "keep");
+  if (!photos.length) {
+    announce("当前没有精选照片可导出。");
+    return;
+  }
+
+  setBusy(true);
+  let success = 0;
+  try {
+    for (const photo of photos) {
+      const blob = await renderPhotoToBlob(photo, "image/png");
+      downloadBlob(blob, `${fileBaseName(photo.name)}_photopilot.png`);
+      success += 1;
+      els.exportSummary.textContent = `正在导出精选图 ${success} / ${photos.length}，原图不会被覆盖。`;
+      await delay(180);
+    }
+    announce(`已导出 ${success} 张精选效果图。`);
+    els.exportSummary.textContent = `已导出 ${success} 张精选效果图，原图未被覆盖。`;
+  } catch (error) {
+    announce(`批量导出中断：${error.message}`);
+    els.exportSummary.textContent = `已导出 ${success} / ${photos.length} 张，失败原因：${error.message}`;
+  } finally {
+    setBusy(false);
+  }
+}
+
 async function renderPhotoToBlob(photo, mimeType) {
   const image = await loadImage(photo.src);
   const canvas = document.createElement("canvas");
@@ -1248,6 +1375,7 @@ function exportProjectRecipe() {
       },
       edit: photo.edit,
       aiPlan: photo.aiPlan?.label ?? "",
+      aiPlanNotes: photo.aiPlan?.notes ?? [],
     })),
   };
   const blob = new Blob([JSON.stringify(project, null, 2)], { type: "application/json;charset=utf-8" });
@@ -1285,6 +1413,7 @@ function setBusy(isBusy) {
     els.runAiButton,
     els.promptButton,
     els.exportImageButton,
+    els.exportKeepButton,
     els.exportRecipeButton,
     els.batchVisibleButton,
     els.batchKeepButton,
@@ -1431,27 +1560,49 @@ els.resetEditsButton.addEventListener("click", () => {
   render();
 });
 
-els.promptButton.addEventListener("click", () => {
+els.promptButton.addEventListener("click", async () => {
   const photo = selectedPhoto();
   if (!photo) return;
-  const plan = planFromPrompt(els.promptInput.value);
-  if (!plan) {
+  const prompt = els.promptInput.value.trim();
+  if (!prompt) {
     els.promptInput.focus();
     announce("先写一句想要的修图方向。");
     return;
   }
-  photo.edit = pickEdit(plan);
-  photo.aiPlan = plan;
-  photo.analysis.notes = plan.notes;
-  state.previewMode = "after";
-  setPreviewModeButtons();
-  announce("已根据提示词生成调色方案。");
-  render();
+
+  setBusy(true);
+  try {
+    await ensurePhotoThumbnail(photo);
+    const provider = currentRetouchProvider();
+    const plan = await provider.createPlan({ photo, prompt });
+    photo.edit = pickEdit(plan);
+    photo.aiPlan = plan;
+    photo.analysis.notes = plan.notes;
+    state.previewMode = "after";
+    setPreviewModeButtons();
+    announce(`已使用${provider.label}生成调色方案。`);
+  } catch (error) {
+    const fallback = planFromPrompt(prompt);
+    if (fallback) {
+      photo.edit = pickEdit(fallback);
+      photo.aiPlan = fallback;
+      photo.analysis.notes = [`云端方案暂不可用：${error.message}`, ...fallback.notes].slice(0, 4);
+      state.previewMode = "after";
+      setPreviewModeButtons();
+      announce("已回退到本地提示词方案。");
+    } else {
+      announce(error.message);
+    }
+  } finally {
+    setBusy(false);
+    render();
+  }
 });
 
 els.batchVisibleButton.addEventListener("click", () => applyEditToBatch("visible"));
 els.batchKeepButton.addEventListener("click", () => applyEditToBatch("keep"));
 els.exportImageButton.addEventListener("click", exportCurrentImage);
+els.exportKeepButton.addEventListener("click", exportKeepImages);
 els.exportRecipeButton.addEventListener("click", exportProjectRecipe);
 els.settingsButton.addEventListener("click", openSettings);
 els.closeSettingsButton.addEventListener("click", closeSettings);

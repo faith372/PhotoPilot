@@ -57,6 +57,11 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (request.method === "POST" && url.pathname === "/api/retouch") {
+    await handleRetouchRequest(request, response);
+    return;
+  }
+
   if (request.method !== "GET" && request.method !== "HEAD") {
     sendJson(response, 405, { message: "Method not allowed" });
     return;
@@ -114,6 +119,36 @@ async function handleScoreRequest(request, response) {
     sendJson(response, 200, { provider, results });
   } catch (error) {
     sendJson(response, 500, { message: error.message || "Scoring failed." });
+  }
+}
+
+async function handleRetouchRequest(request, response) {
+  try {
+    const body = await readJsonBody(request);
+    const { settings, photo, prompt } = body;
+    const provider = normalizeProvider(settings?.provider);
+    const apiKey = settings?.apiKey;
+
+    if (!apiKey) {
+      sendJson(response, 400, { message: "Missing API key." });
+      return;
+    }
+
+    if (!settings?.uploadConsent) {
+      sendJson(response, 400, { message: "Upload consent is required before cloud retouch planning." });
+      return;
+    }
+
+    if (!photo || !prompt?.trim()) {
+      sendJson(response, 400, { message: "Photo and prompt are required." });
+      return;
+    }
+
+    const config = providerDefaults[provider];
+    const plan = config.type === "anthropic" ? await retouchWithAnthropic(config, apiKey, photo, prompt) : await retouchWithOpenAICompatible(config, apiKey, photo, prompt);
+    sendJson(response, 200, { provider, plan });
+  } catch (error) {
+    sendJson(response, 500, { message: error.message || "Retouch planning failed." });
   }
 }
 
@@ -185,6 +220,70 @@ async function scoreWithAnthropic(config, apiKey, photos) {
   return parseScoringResult(text, photos);
 }
 
+async function retouchWithOpenAICompatible(config, apiKey, photo, prompt) {
+  const response = await fetch(config.baseUrl, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: config.model,
+      temperature: 0.35,
+      response_format: { type: "json_object" },
+      messages: [
+        {
+          role: "system",
+          content: retouchSystemPrompt(),
+        },
+        {
+          role: "user",
+          content: buildOpenAIRetouchContent(photo, prompt),
+        },
+      ],
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`${config.label} API error: ${response.status} ${await response.text()}`);
+  }
+
+  const data = await response.json();
+  const text = data.choices?.[0]?.message?.content ?? "";
+  return parseRetouchPlan(text);
+}
+
+async function retouchWithAnthropic(config, apiKey, photo, prompt) {
+  const response = await fetch(config.baseUrl, {
+    method: "POST",
+    headers: {
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: config.model,
+      max_tokens: 900,
+      temperature: 0.35,
+      system: retouchSystemPrompt(),
+      messages: [
+        {
+          role: "user",
+          content: buildAnthropicRetouchContent(photo, prompt),
+        },
+      ],
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`${config.label} API error: ${response.status} ${await response.text()}`);
+  }
+
+  const data = await response.json();
+  const text = (data.content ?? []).filter((part) => part.type === "text").map((part) => part.text).join("\n");
+  return parseRetouchPlan(text);
+}
+
 function scoringSystemPrompt() {
   return [
     "You are PhotoPilot, a strict but practical photography culling assistant.",
@@ -192,6 +291,16 @@ function scoringSystemPrompt() {
     "Use the local metrics as evidence, then adjust only when image content or visual aesthetics justify it.",
     "Return JSON only, no markdown.",
     "Schema: {\"results\":[{\"id\":\"photo id\",\"finalScore\":0-100,\"metrics\":{\"sharpness\":0-100,\"exposure\":0-100,\"composition\":0-100,\"color\":0-100,\"dynamicRange\":0-100,\"expression\":0-100|null,\"duplicate\":0-100},\"confidence\":0-100,\"notes\":[\"short Chinese reason\"]}]}",
+  ].join(" ");
+}
+
+function retouchSystemPrompt() {
+  return [
+    "You are PhotoPilot, a restrained photo retouch planning assistant.",
+    "Convert the user's Chinese or English editing intent into non-destructive edit parameters.",
+    "Keep edits natural unless the user explicitly asks for a stronger style.",
+    "Return JSON only, no markdown.",
+    "Schema: {\"exposure\":-100..100,\"contrast\":-100..100,\"temperature\":-100..100,\"saturation\":-100..100,\"beauty\":0..100,\"label\":\"short Chinese label\",\"notes\":[\"short Chinese reason\"]}.",
   ].join(" ");
 }
 
@@ -239,6 +348,47 @@ function buildAnthropicContent(photos) {
   return content;
 }
 
+function buildOpenAIRetouchContent(photo, prompt) {
+  const content = [
+    {
+      type: "text",
+      text: `请根据用户修图意图生成非破坏式参数。参数范围：exposure/contrast/temperature/saturation 为 -100 到 100，beauty 为 0 到 100。用户意图：${prompt}。照片上下文：${JSON.stringify(summarizePhotoForRetouch(photo))}`,
+    },
+  ];
+
+  if (photo.imageDataUrl) {
+    content.push({
+      type: "image_url",
+      image_url: { url: photo.imageDataUrl },
+    });
+  }
+
+  return content;
+}
+
+function buildAnthropicRetouchContent(photo, prompt) {
+  const content = [
+    {
+      type: "text",
+      text: `请根据用户修图意图生成非破坏式参数。参数范围：exposure/contrast/temperature/saturation 为 -100 到 100，beauty 为 0 到 100。用户意图：${prompt}。照片上下文：${JSON.stringify(summarizePhotoForRetouch(photo))}`,
+    },
+  ];
+
+  const parsed = parseDataUrl(photo.imageDataUrl);
+  if (parsed) {
+    content.push({
+      type: "image",
+      source: {
+        type: "base64",
+        media_type: parsed.mediaType,
+        data: parsed.base64,
+      },
+    });
+  }
+
+  return content;
+}
+
 function summarizePhotos(photos) {
   return photos.map((photo) => ({
     id: photo.id,
@@ -246,6 +396,28 @@ function summarizePhotos(photos) {
     type: photo.type,
     localScore: photo.localScore,
   }));
+}
+
+function summarizePhotoForRetouch(photo) {
+  return {
+    id: photo.id,
+    name: photo.name,
+    type: photo.type,
+    score: photo.score,
+    status: photo.status,
+    analysis: {
+      source: photo.analysis?.source,
+      sharpness: photo.analysis?.sharpness,
+      exposure: photo.analysis?.exposure,
+      composition: photo.analysis?.composition,
+      color: photo.analysis?.color,
+      dynamicRange: photo.analysis?.dynamicRange,
+      expression: photo.analysis?.expression,
+      duplicate: photo.analysis?.duplicate,
+      notes: Array.isArray(photo.analysis?.notes) ? photo.analysis.notes.slice(0, 4) : [],
+    },
+    currentEdit: photo.currentEdit,
+  };
 }
 
 function parseScoringResult(text, photos) {
@@ -262,6 +434,21 @@ function parseScoringResult(text, photos) {
       confidence: clamp(Number(item.confidence ?? 80), 0, 100),
       notes: Array.isArray(item.notes) ? item.notes.slice(0, 5).map(String) : [],
     }));
+}
+
+function parseRetouchPlan(text) {
+  const json = extractJson(text);
+  const parsed = JSON.parse(json);
+  const plan = parsed.plan ?? parsed;
+  return {
+    exposure: clamp(Number(plan.exposure ?? 0), -100, 100),
+    contrast: clamp(Number(plan.contrast ?? 0), -100, 100),
+    temperature: clamp(Number(plan.temperature ?? 0), -100, 100),
+    saturation: clamp(Number(plan.saturation ?? 0), -100, 100),
+    beauty: clamp(Number(plan.beauty ?? 12), 0, 100),
+    label: String(plan.label || "AI 修图方案").slice(0, 32),
+    notes: Array.isArray(plan.notes) ? plan.notes.slice(0, 4).map(String) : ["已根据照片上下文和用户意图生成参数。"],
+  };
 }
 
 function extractJson(text) {

@@ -32,6 +32,8 @@ await writeFile(
     "cd /d %~dp0",
     "if exist PhotoPilot.exe (",
     "  start \"\" PhotoPilot.exe",
+    ") else if exist launcher.cjs (",
+    "  node launcher.cjs",
     ") else (",
     "  node server.mjs",
     ")",
@@ -46,7 +48,8 @@ await writeFile(
     "PhotoPilot AI 可运行版本",
     "",
     "Windows：双击 PhotoPilot/启动 PhotoPilot.bat。",
-    "如果当前目录存在 PhotoPilot.exe，脚本会直接运行 exe；否则使用 node server.mjs 启动。",
+    "如果当前目录存在 PhotoPilot.exe，脚本会直接运行 exe；否则使用 node launcher.cjs 或 node server.mjs 启动。",
+    "当未能成功生成 PhotoPilot.exe 时，需要本机已安装 Node.js。",
     "",
     "默认地址：http://127.0.0.1:5173",
   ].join("\r\n"),
@@ -91,6 +94,7 @@ async function buildExeIfPossible() {
     await copyFile(nodeExe, target);
     await injectSeaBlob(target, blob);
   } catch (error) {
+    await rm(target, { force: true });
     await copyFile(launcher, resolve(release, "launcher.cjs"));
     console.warn(`Could not build SEA executable: ${error.message}`);
   }
@@ -103,6 +107,7 @@ async function injectSeaBlob(target, blob) {
   const postject = postjectCandidates.find((candidate) => existsSync(candidate));
 
   if (!postject) {
+    await rm(target, { force: true });
     await copyFile(resolve(root, "tools/windows-launcher.cjs"), resolve(release, "launcher.cjs"));
     console.warn("postject is not installed; copied launcher.cjs instead of injecting SEA blob.");
     return;
